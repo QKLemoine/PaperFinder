@@ -1,0 +1,52 @@
+# PaperFinder configuration. Edit freely — no code changes needed.
+
+[retrieval]
+# arXiv categories to sweep. Full taxonomy: https://arxiv.org/category_taxonomy
+categories = ["cs.HC", "cs.AI", "cs.CL", "cs.LG"]
+
+# How far back to look. 1 = today's batch only. Bump to 3-4 after a weekend or a
+# gap, since arXiv does not publish on weekends and a 1-day window will come back empty.
+lookback_days = 2
+
+# Hard cap on papers pulled per run, across all categories after dedupe.
+# Roughly your cost ceiling: every paper's abstract goes to the scoring model.
+max_results = 400
+
+[scoring]
+# Scoring runs in two stages so the expensive model only reads the shortlist.
+#
+# Stage 1 screens every retrieved paper. This is where the volume is, so this model
+# choice drives almost all of the run cost. Its job is recall, not final ranking:
+# it only has to decide "is this plausibly in the top 25", which is a much easier
+# call than ordering the winners.
+screening_model = "claude-haiku-4-5"
+
+# Effort for stage 1. Leave empty to omit the parameter — claude-haiku-4-5 rejects
+# it outright. Set it only if you switch screening_model to a model that accepts it.
+screening_effort = ""
+
+# Stage 2 re-scores the shortlist and writes the digest. Better judgment on the
+# boundary cases, applied to ~25 papers instead of ~200.
+strong_model = "claude-sonnet-5"
+strong_effort = "medium"
+
+# How many papers stage 1 forwards to stage 2. Set to 0 to skip stage 2 entirely
+# and rank on the screening scores alone (cheapest, and noticeably blunter).
+rescore_top = 25
+
+# Papers per scoring request. Lower = more requests but smaller, more reliable
+# responses. 50 keeps each call comfortably inside a non-streaming budget.
+batch_size = 50
+
+# How many papers make the digest.
+top_n = 3
+
+# Papers scoring below this (0-10) are dropped even if they land in the top N.
+# Prevents a thin day from promoting three irrelevant papers.
+score_threshold = 6
+
+[output]
+digest_dir = "digests"
+
+# Also write every scored paper (not just the top N) to digests/*.json.
+write_json_archive = false

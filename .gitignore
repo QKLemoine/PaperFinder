@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+digests/
+.env
+research_profile.md
