@@ -63,6 +63,43 @@ exclusions do as much work as the inclusions.
 
 `--limit` and `--days` override config for one run only.
 
+## Conference mode
+
+Instead of the last few days of submissions, rank everything accepted to one venue:
+
+```sh
+# Match counts, exclusions, and each paper's matched comment — no model calls
+.venv/bin/python -m paperfinder conference --venue CVPR --year 2026 --dry-run
+
+# Full run: writes digests/conference-CVPR-2026.md
+.venv/bin/python -m paperfinder conference --venue CVPR --year 2026 --limit 2500
+```
+
+**Venue matching is best-effort.** arXiv has no acceptance metadata, so the net searches
+the free-text comment (`co:`) and journal-ref (`jr:`) fields for phrases like
+`CVPR 2026`, `CVPR2026`, `CVPR'26`, and `CVPR26`. It then keeps only papers where the
+venue and year are written close together, and drops any whose comment or journal ref
+mentions `workshop`, `submitted to`, `under review`, or `rejected`. Expect it to miss
+accepted papers whose authors never updated their arXiv comment, and to let through the
+occasional oddly worded false positive. `--dry-run` shows the exclusion counts per
+reason and the matched text for every paper kept, so you can check before paying.
+
+Details:
+
+- **Aliases.** Add venues known by more than one name under `[conference.aliases]` in
+  `config.toml` (NeurIPS/NIPS is there already); any name in a group searches all of them.
+- **Truncation.** Results are newest-first and capped at `max_results`. Big venues have
+  thousands of matches, so if the cap cuts any off, the run warns loudly — including in
+  `--dry-run` and in the digest — and you should rerun with a higher `--limit`. Every
+  screened paper costs a scoring call, so dry-run first to see the size.
+- **Free re-runs.** Screening scores, rescores, and digest paragraphs are cached per
+  paper in `digests/.conference_cache.json`. The cache is keyed on the research profile,
+  both model names, and `SCORING_VERSION` in `score.py` (bump it when you change the
+  prompts), so an edit to any of them rescores from scratch. Re-running unchanged makes
+  no model calls; adding papers or raising `rescore_top` only pays for what's new.
+- Uses the same two-stage scoring and `[scoring]` settings as daily mode; `lookback_days`
+  and `--days` don't apply.
+
 ## Configuration
 
 `config.toml` holds everything tunable; each field is commented there. The ones you'll
@@ -144,12 +181,16 @@ config.toml            # all tunable settings
 research_profile.md    # your ideas — the scoring target
 paperfinder/
   config.py            # config loading
-  fetch.py             # the net: arXiv retrieval
+  fetch.py             # the net: arXiv retrieval, conference query + filters
   score.py             # the filter: scoring + digest prose
+  cache.py             # per-paper score cache for conference mode
   digest.py            # the deliverable: Markdown rendering
   __main__.py          # CLI
+tests/                 # unittest, no network or API calls
 digests/               # output (gitignored)
 ```
+
+Run the tests with `.venv/bin/python -m unittest discover -s tests -t .`
 
 ## Possible extensions
 
