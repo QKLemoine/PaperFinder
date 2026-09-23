@@ -79,6 +79,16 @@ class FilterTest(unittest.TestCase):
             {"workshop": 2, "submitted to": 1, "under review": 0, "rejected": 1},
         )
         self.assertEqual(result.excluded, 5)
+        self.assertEqual(
+            [(p.title, reason) for p, reason in result.excluded_papers],
+            [
+                ("Paper 2", "submitted to"),
+                ("Paper 3", "workshop"),
+                ("Paper 4", "workshop"),
+                ("Paper 5", fetch.NO_PROXIMITY),
+                ("Paper 7", "rejected"),
+            ],
+        )
 
 
 class FetchConferenceTest(TempDirMixin, unittest.TestCase):

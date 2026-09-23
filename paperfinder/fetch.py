@@ -9,7 +9,7 @@ mode this pipeline exists to avoid.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 import arxiv
@@ -90,11 +90,15 @@ def venue_pattern(names: list[str], year: int) -> re.Pattern:
     )
 
 
+NO_PROXIMITY = "venue and year not written together"
+
+
 @dataclass
 class ConferenceFilterResult:
     kept: list[Paper]
     no_proximity: int
     by_marker: dict[str, int]
+    excluded_papers: list[tuple[Paper, str]] = field(default_factory=list)
 
     @property
     def excluded(self) -> int:
@@ -113,11 +117,13 @@ def filter_conference(papers: list[Paper], names: list[str], year: int) -> Confe
         text = "\n".join(t for t in (paper.comment, paper.journal_ref) if t)
         if not pattern.search(text):
             result.no_proximity += 1
+            result.excluded_papers.append((paper, NO_PROXIMITY))
             continue
         lowered = text.lower()
         marker = next((m for m in FALSE_POSITIVE_MARKERS if m in lowered), None)
         if marker:
             result.by_marker[marker] += 1
+            result.excluded_papers.append((paper, marker))
             continue
         result.kept.append(paper)
     return result

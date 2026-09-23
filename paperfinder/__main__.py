@@ -56,6 +56,14 @@ def _warn_truncated(cfg: config_mod.Config) -> None:
     )
 
 
+def _print_paper(p: fetch.Paper, prefix: str) -> None:
+    print(f"  {prefix} {p.arxiv_id}  {p.title[:90]}")
+    if p.comment:
+        print(f"      comment:     {p.comment}")
+    if p.journal_ref:
+        print(f"      journal-ref: {p.journal_ref}")
+
+
 def _run_conference(cfg: config_mod.Config, args: argparse.Namespace) -> int:
     names = fetch.venue_names(args.venue, cfg.venue_aliases)
     _log(
@@ -73,15 +81,20 @@ def _run_conference(cfg: config_mod.Config, args: argparse.Namespace) -> int:
     _log(f"  {filtered.no_proximity:>4}  venue and year not written together")
     for marker, n in filtered.by_marker.items():
         _log(f"  {n:>4}  mentions {marker!r}")
+
+    if args.show_excluded:
+        print(f"\nExcluded papers ({filtered.excluded}):")
+        for p, reason in filtered.excluded_papers:
+            label = reason if reason == fetch.NO_PROXIMITY else f"marker: {reason!r}"
+            _print_paper(p, f"[{label}]")
+        print()
+        sys.stdout.flush()
+
     _log(f"{len(filtered.kept)} papers left to screen.")
 
     if args.dry_run:
         for p in filtered.kept:
-            print(f"  [{p.published.date()}] {p.arxiv_id}  {p.title[:90]}")
-            if p.comment:
-                print(f"      comment:     {p.comment}")
-            if p.journal_ref:
-                print(f"      journal-ref: {p.journal_ref}")
+            _print_paper(p, f"[{p.published.date()}]")
         sys.stdout.flush()
         if truncated:
             _warn_truncated(cfg)
@@ -153,6 +166,11 @@ def main() -> int:
         help="Show match and exclusion counts with each paper's comment (no API cost).",
     )
     conference.add_argument("--limit", type=int, help="Override max_results for this run.")
+    conference.add_argument(
+        "--show-excluded",
+        action="store_true",
+        help="List each excluded paper with its comment/journal ref and why it was excluded.",
+    )
     args = parser.parse_args()
 
     cfg = config_mod.load()
