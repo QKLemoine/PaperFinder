@@ -16,8 +16,12 @@ from dataclasses import dataclass
 import anthropic
 from pydantic import BaseModel, Field
 
+from .cache import ScoreCache, namespace_key
 from .config import Config
 from .fetch import Paper
+
+# Bump when the prompts or scoring semantics change, so cached scores are not reused.
+SCORING_VERSION = 1
 
 SCORING_SYSTEM = """\
 You are screening a day's worth of new arXiv papers for one researcher, against the \
@@ -189,6 +193,15 @@ def write_summaries(
     top: list[ScoredPaper],
 ) -> list[str]:
     """Write one digest paragraph per top paper. Falls back to the scoring reason."""
+    return _generate_summaries(client, config, top) or [item.reason for item in top]
+
+
+def _generate_summaries(
+    client: anthropic.Anthropic,
+    config: Config,
+    top: list[ScoredPaper],
+) -> list[str] | None:
+    """One paragraph per paper, or None when the output can't be trusted."""
     if not top:
         return []
 
@@ -210,7 +223,7 @@ def write_summaries(
     )
 
     if response.stop_reason == "refusal":
-        return [item.reason for item in top]
+        return None
 
     text = "\n".join(b.text for b in response.content if b.type == "text").strip()
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
@@ -218,5 +231,89 @@ def write_summaries(
     # If the model returned a different number of paragraphs than papers, we can no
     # longer match them up safely — fall back rather than misattribute a summary.
     if len(paragraphs) != len(top):
-        return [item.reason for item in top]
+        return None
     return paragraphs
+
+
+def open_cache(config: Config) -> ScoreCache:
+    key = namespace_key(
+        config.profile, config.screening_model, config.strong_model, SCORING_VERSION
+    )
+    return ScoreCache(config.digest_dir / ".conference_cache.json", key)
+
+
+def _score_cached(
+    client: anthropic.Anthropic,
+    config: Config,
+    cache: ScoreCache,
+    papers: list[Paper],
+    slot: str,
+    model: str,
+    effort: str,
+    on_progress=None,
+) -> list[ScoredPaper]:
+    """Score only papers missing `slot`, saving after every batch. Returns all of them."""
+    missing = [p for p in papers if cache.get(p.arxiv_id, slot) is None]
+    for start in range(0, len(missing), config.batch_size):
+        batch = missing[start : start + config.batch_size]
+        for s in score_papers(client, config, batch, model, effort):
+            cache.put(s.paper.arxiv_id, slot, {"score": s.score, "reason": s.reason})
+        cache.save()
+        if on_progress:
+            on_progress(min(start + config.batch_size, len(missing)), len(missing))
+
+    scored = [
+        ScoredPaper(paper=p, **cache.get(p.arxiv_id, slot))
+        for p in papers
+        if cache.get(p.arxiv_id, slot) is not None
+    ]
+    scored.sort(key=lambda s: (-s.score, s.paper.title))
+    return scored
+
+
+def score_conference(
+    client: anthropic.Anthropic,
+    config: Config,
+    papers: list[Paper],
+    cache: ScoreCache,
+    on_progress=None,
+    log=None,
+) -> list[ScoredPaper]:
+    """Two-stage scoring where every model result is cached per paper.
+
+    The shortlist is always the top `rescore_top` of the full pool by screening score, so
+    it is the same set a cold run would pick; only its members lacking a cached rescore
+    go to the strong model. An unchanged re-run therefore makes no model calls.
+    """
+    log = log or (lambda _msg: None)
+    screened = _score_cached(
+        client, config, cache, papers, "screening",
+        config.screening_model, config.screening_effort, on_progress,
+    )
+    if config.rescore_top <= 0:
+        return screened
+
+    shortlist = [s.paper for s in screened[: config.rescore_top]]
+    uncached = sum(cache.get(p.arxiv_id, "rescored") is None for p in shortlist)
+    log(f"Stage 2: shortlist of {len(shortlist)}, {uncached} not yet rescored.")
+    return _score_cached(
+        client, config, cache, shortlist, "rescored",
+        config.strong_model, config.strong_effort,
+    )
+
+
+def conference_summaries(
+    client: anthropic.Anthropic,
+    config: Config,
+    top: list[ScoredPaper],
+    cache: ScoreCache,
+) -> list[str]:
+    """Cached per paper; falls back to the scoring reason without caching the fallback."""
+    missing = [s for s in top if cache.get(s.paper.arxiv_id, "summary") is None]
+    if missing:
+        paragraphs = _generate_summaries(client, config, missing)
+        if paragraphs is not None:
+            for s, text in zip(missing, paragraphs):
+                cache.put(s.paper.arxiv_id, "summary", text)
+            cache.save()
+    return [cache.get(s.paper.arxiv_id, "summary") or s.reason for s in top]
