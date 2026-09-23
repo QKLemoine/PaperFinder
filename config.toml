@@ -50,3 +50,9 @@ digest_dir = "digests"
 
 # Also write every scored paper (not just the top N) to digests/*.json.
 write_json_archive = false
+
+[conference]
+# Venue aliases for `paperfinder conference`. Asking for any name in a group searches
+# for all of them, e.g. --venue NIPS also finds "NeurIPS 2025".
+[conference.aliases]
+NeurIPS = ["NIPS"]

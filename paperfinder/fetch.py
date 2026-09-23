@@ -48,8 +48,90 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+FALSE_POSITIVE_MARKERS = ["workshop", "submitted to", "under review", "rejected"]
+
+
 def build_category_query(categories: list[str]) -> str:
     return " OR ".join(f"cat:{c}" for c in categories)
+
+
+def venue_names(venue: str, aliases: dict[str, list[str]]) -> list[str]:
+    """`venue` plus every alias grouped with it, matched case-insensitively either way."""
+    names = [venue]
+    for canonical, group in aliases.items():
+        if venue.lower() in {n.lower() for n in [canonical, *group]}:
+            names += [canonical, *group]
+    return list({n.lower(): n for n in names}.values())
+
+
+def build_conference_query(names: list[str], year: int) -> str:
+    yyyy, yy = str(year), str(year)[-2:]
+    phrases = []
+    for name in names:
+        name = name.replace('"', "")
+        phrases += [f"{name} {yyyy}", f"{name}{yyyy}", f"{name}'{yy}", f"{name}{yy}"]
+    return " OR ".join(f'{field}:"{p}"' for p in phrases for field in ("co", "jr"))
+
+
+def venue_pattern(names: list[str], year: int) -> re.Pattern:
+    """Venue and year within a few non-alphanumeric characters, in either order.
+
+    Letter boundaries keep "CVPRW"/"ICCVW" (workshops) from matching; the two-digit year
+    is only accepted glued on or apostrophed ("CVPR26", "CVPR'26"), since a bare "CVPR, 26"
+    is as likely a page count.
+    """
+    yyyy, yy = str(year), str(year)[-2:]
+    alt = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    venue = rf"(?<![A-Za-z])(?:{alt})(?![A-Za-z])"
+    gap = r"[^A-Za-z0-9\n]{0,4}"
+    return re.compile(
+        rf"{venue}(?:{gap}{yyyy}|\s?['’]{yy}|{yy})(?!\d)|(?<!\d){yyyy}{gap}{venue}",
+        re.IGNORECASE,
+    )
+
+
+@dataclass
+class ConferenceFilterResult:
+    kept: list[Paper]
+    no_proximity: int
+    by_marker: dict[str, int]
+
+    @property
+    def excluded(self) -> int:
+        return self.no_proximity + sum(self.by_marker.values())
+
+
+def filter_conference(papers: list[Paper], names: list[str], year: int) -> ConferenceFilterResult:
+    """Drop papers whose venue/year hit isn't a real acceptance.
+
+    Each excluded paper is counted once: under proximity if venue and year never appear
+    together, otherwise under the first false-positive marker it contains.
+    """
+    pattern = venue_pattern(names, year)
+    result = ConferenceFilterResult(kept=[], no_proximity=0, by_marker={m: 0 for m in FALSE_POSITIVE_MARKERS})
+    for paper in papers:
+        text = "\n".join(t for t in (paper.comment, paper.journal_ref) if t)
+        if not pattern.search(text):
+            result.no_proximity += 1
+            continue
+        lowered = text.lower()
+        marker = next((m for m in FALSE_POSITIVE_MARKERS if m in lowered), None)
+        if marker:
+            result.by_marker[marker] += 1
+            continue
+        result.kept.append(paper)
+    return result
+
+
+def fetch_conference(config: Config, names: list[str], year: int) -> tuple[list[Paper], bool]:
+    """Every paper whose comment or journal-ref names the venue and year, newest first.
+
+    No lookback window. Returns (papers, truncated) — truncated means max_results cut
+    off real matches.
+    """
+    return _retrieve(
+        build_conference_query(names, year), config.max_results, detect_truncation=True
+    )
 
 
 def fetch_recent(config: Config) -> list[Paper]:

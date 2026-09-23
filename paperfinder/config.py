@@ -25,6 +25,7 @@ class Config:
     digest_dir: Path
     write_json_archive: bool
     profile_path: Path
+    venue_aliases: dict[str, list[str]]
 
     @property
     def profile(self) -> str:
@@ -68,4 +69,5 @@ def load(path: Path | None = None) -> Config:
         digest_dir=digest_dir,
         write_json_archive=bool(output.get("write_json_archive", False)),
         profile_path=ROOT / "research_profile.md",
+        venue_aliases={k: list(v) for k, v in raw.get("conference", {}).get("aliases", {}).items()},
     )
