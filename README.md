@@ -82,7 +82,9 @@ venue and year are written close together, and drops any whose comment or journa
 mentions `workshop`, `submitted to`, `under review`, or `rejected`. Expect it to miss
 accepted papers whose authors never updated their arXiv comment, and to let through the
 occasional oddly worded false positive. `--dry-run` shows the exclusion counts per
-reason and the matched text for every paper kept, so you can check before paying.
+reason and the matched text for every paper kept, so you can check before paying. Add
+`--show-excluded` to also list every excluded paper with its matched text and the reason
+it was dropped.
 
 Details:
 
