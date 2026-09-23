@@ -27,6 +27,8 @@ class Paper:
     published: datetime
     abs_url: str
     pdf_url: str
+    comment: str | None = None
+    journal_ref: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -46,11 +48,28 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def build_category_query(categories: list[str]) -> str:
+    return " OR ".join(f"cat:{c}" for c in categories)
+
+
 def fetch_recent(config: Config) -> list[Paper]:
     """Return papers submitted within the lookback window, newest first."""
-    query = " OR ".join(f"cat:{c}" for c in config.categories)
     cutoff = datetime.now(timezone.utc) - timedelta(days=config.lookback_days)
+    papers, _ = _retrieve(build_category_query(config.categories), config.max_results, cutoff)
+    return papers
 
+
+def _retrieve(
+    query: str,
+    max_results: int,
+    cutoff: datetime | None = None,
+    detect_truncation: bool = False,
+) -> tuple[list[Paper], bool]:
+    """Page through `query` newest-first. Returns (papers, truncated).
+
+    With `detect_truncation`, one extra result is requested so a full page can be told
+    apart from a cap that actually cut results off.
+    """
     client = arxiv.Client(page_size=100, delay_seconds=3.0, num_retries=3)
     search = arxiv.Search(
         query=query,
@@ -58,14 +77,18 @@ def fetch_recent(config: Config) -> list[Paper]:
         # cutoff rather than paging through the whole category history.
         sort_by=arxiv.SortCriterion.SubmittedDate,
         sort_order=arxiv.SortOrder.Descending,
-        max_results=config.max_results,
+        max_results=max_results + 1 if detect_truncation else max_results,
     )
 
     papers: list[Paper] = []
     seen: set[str] = set()
+    truncated = False
 
-    for result in client.results(search):
-        if result.published < cutoff:
+    for n, result in enumerate(client.results(search)):
+        if n == max_results:
+            truncated = True
+            break
+        if cutoff is not None and result.published < cutoff:
             break
 
         arxiv_id = result.get_short_id()
@@ -85,7 +108,9 @@ def fetch_recent(config: Config) -> list[Paper]:
                 published=result.published,
                 abs_url=result.entry_id,
                 pdf_url=result.pdf_url or f"https://arxiv.org/pdf/{arxiv_id}",
+                comment=result.comment,
+                journal_ref=result.journal_ref,
             )
         )
 
-    return papers
+    return papers, truncated
