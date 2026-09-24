@@ -1,5 +1,7 @@
 # PaperFinder
 
+![Papers scanned](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FGITHUB_USER%2FGITHUB_REPO%2Fmain%2Fstats.json&query=%24.papers_scanned&label=papers%20scanned)
+
 A daily arXiv digest that ranks new papers by whether their *substance* matches your
 research ideas, not whether their titles share your keywords.
 
@@ -102,6 +104,29 @@ Details:
 - Uses the same two-stage scoring and `[scoring]` settings as daily mode; `lookback_days`
   and `--days` don't apply.
 
+## Papers scanned
+
+Every paper a model has actually scored — its score parsed and kept — is recorded by
+arXiv ID (version suffix dropped) in `digests/.scanned_ids.json`, after each batch in both
+modes. It's a set, so re-running a window or serving conference scores from the cache
+never double-counts, and `--dry-run` never counts. On first use it seeds itself from the
+conference cache.
+
+After each real run, even one that fails partway, `stats.json` in the repo root is
+rewritten with the aggregate only:
+
+```json
+{"papers_scanned": 2015, "updated": "2026-09-24"}
+```
+
+No IDs, titles, or profile text leave `digests/`. The badge at the top reads this file
+from GitHub, so it only moves when you commit and push `stats.json`. Check the current
+totals any time with:
+
+```sh
+.venv/bin/python -m paperfinder stats
+```
+
 ## Configuration
 
 `config.toml` holds everything tunable; each field is commented there. The ones you'll
@@ -180,12 +205,14 @@ the exclusions in the profile before raising `score_threshold`.
 
 ```
 config.toml            # all tunable settings
+stats.json             # papers-scanned count for the README badge (aggregate only)
 research_profile.md    # your ideas — the scoring target
 paperfinder/
   config.py            # config loading
   fetch.py             # the net: arXiv retrieval, conference query + filters
   score.py             # the filter: scoring + digest prose
   cache.py             # per-paper score cache for conference mode
+  ledger.py            # scanned-paper ledger and stats.json
   digest.py            # the deliverable: Markdown rendering
   __main__.py          # CLI
 tests/                 # unittest, no network or API calls
