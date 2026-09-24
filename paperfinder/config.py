@@ -26,6 +26,15 @@ class Config:
     write_json_archive: bool
     profile_path: Path
     venue_aliases: dict[str, list[str]]
+    stats_path: Path
+
+    @property
+    def conference_cache_path(self) -> Path:
+        return self.digest_dir / ".conference_cache.json"
+
+    @property
+    def ledger_path(self) -> Path:
+        return self.digest_dir / ".scanned_ids.json"
 
     @property
     def profile(self) -> str:
@@ -70,4 +79,5 @@ def load(path: Path | None = None) -> Config:
         write_json_archive=bool(output.get("write_json_archive", False)),
         profile_path=ROOT / "research_profile.md",
         venue_aliases={k: list(v) for k, v in raw.get("conference", {}).get("aliases", {}).items()},
+        stats_path=ROOT / "stats.json",
     )

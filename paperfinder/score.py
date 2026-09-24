@@ -119,11 +119,15 @@ def score_papers(
     model: str,
     effort: str = "",
     on_progress=None,
+    on_batch=None,
 ) -> list[ScoredPaper]:
     """Score papers against the profile with `model`. Returns results sorted best-first.
 
     `effort` is omitted when empty. Some models (claude-haiku-4-5) reject the
     parameter outright, so it is opt-in rather than defaulted.
+
+    `on_batch` receives each batch's kept results — papers whose assessment parsed and
+    matched a paper in the batch — so callers can track what was actually scored.
     """
     system = [
         {
@@ -168,17 +172,21 @@ def score_papers(
                 f"(stop_reason={response.stop_reason}). Lower batch_size in config.toml and retry."
             )
 
+        kept: list[ScoredPaper] = []
         for assessment in result.assessments:
             local = assessment.index - start
             if not 0 <= local < len(batch):
                 continue  # Model returned an index outside this batch; drop it.
-            scored.append(
+            kept.append(
                 ScoredPaper(
                     paper=batch[local],
                     score=max(0, min(10, assessment.score)),
                     reason=assessment.reason.strip(),
                 )
             )
+        scored.extend(kept)
+        if on_batch:
+            on_batch(kept)
 
         if on_progress:
             on_progress(min(start + config.batch_size, len(papers)), len(papers))
@@ -239,7 +247,7 @@ def open_cache(config: Config) -> ScoreCache:
     key = namespace_key(
         config.profile, config.screening_model, config.strong_model, SCORING_VERSION
     )
-    return ScoreCache(config.digest_dir / ".conference_cache.json", key)
+    return ScoreCache(config.conference_cache_path, key)
 
 
 def _score_cached(
@@ -251,12 +259,13 @@ def _score_cached(
     model: str,
     effort: str,
     on_progress=None,
+    on_batch=None,
 ) -> list[ScoredPaper]:
     """Score only papers missing `slot`, saving after every batch. Returns all of them."""
     missing = [p for p in papers if cache.get(p.arxiv_id, slot) is None]
     for start in range(0, len(missing), config.batch_size):
         batch = missing[start : start + config.batch_size]
-        for s in score_papers(client, config, batch, model, effort):
+        for s in score_papers(client, config, batch, model, effort, on_batch=on_batch):
             cache.put(s.paper.arxiv_id, slot, {"score": s.score, "reason": s.reason})
         cache.save()
         if on_progress:
@@ -278,6 +287,7 @@ def score_conference(
     cache: ScoreCache,
     on_progress=None,
     log=None,
+    on_batch=None,
 ) -> list[ScoredPaper]:
     """Two-stage scoring where every model result is cached per paper.
 
@@ -288,7 +298,7 @@ def score_conference(
     log = log or (lambda _msg: None)
     screened = _score_cached(
         client, config, cache, papers, "screening",
-        config.screening_model, config.screening_effort, on_progress,
+        config.screening_model, config.screening_effort, on_progress, on_batch,
     )
     if config.rescore_top <= 0:
         return screened
@@ -298,7 +308,7 @@ def score_conference(
     log(f"Stage 2: shortlist of {len(shortlist)}, {uncached} not yet rescored.")
     return _score_cached(
         client, config, cache, shortlist, "rescored",
-        config.strong_model, config.strong_effort,
+        config.strong_model, config.strong_effort, on_batch=on_batch,
     )
 
 

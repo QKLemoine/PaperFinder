@@ -17,6 +17,22 @@ import tempfile
 from pathlib import Path
 
 
+def write_json_atomic(path: Path, data, indent: int | None = None) -> None:
+    """Write via temp file + rename: a crash mid-write leaves the previous file intact."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=indent)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+
 def namespace_key(profile: str, screening_model: str, strong_model: str, version: int) -> str:
     payload = json.dumps([profile, screening_model, strong_model, version])
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -36,15 +52,4 @@ class ScoreCache:
         self.entries.setdefault(arxiv_id, {})[slot] = value
 
     def save(self) -> None:
-        """Write atomically: a crash mid-write leaves the previous file intact."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".cache-", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(self._all, f, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, self.path)
-        except BaseException:
-            os.unlink(tmp)
-            raise
+        write_json_atomic(self.path, self._all)

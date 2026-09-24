@@ -1,18 +1,60 @@
 from __future__ import annotations
 
+import re
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+from paperfinder import score
 from paperfinder.config import Config
 from paperfinder.fetch import Paper
 
 NOW = datetime(2026, 6, 1, tzinfo=timezone.utc)
 
 
-def make_paper(i: int, comment: str | None = "CVPR 2026", journal_ref: str | None = None) -> Paper:
-    arxiv_id = f"2603.{i:05d}v1"
+class FakeAnthropic:
+    """Scores paper i as 9 - i on the screening model and 10 - i on the strong model.
+
+    `omit` leaves those paper numbers out of every response; `fail_parse_calls` makes
+    those (0-based) parse calls come back unparseable.
+    """
+
+    def __init__(self, omit: set[int] = frozenset(), fail_parse_calls: set[int] = frozenset()):
+        self.calls = []
+        self.omit = omit
+        self.fail_parse_calls = fail_parse_calls
+        self.messages = SimpleNamespace(parse=self._parse, create=self._create)
+
+    def _parse(self, model, messages, output_format, **_):
+        content = messages[0]["content"]
+        found = re.findall(r'<paper index="(\d+)">\n<title>Paper (\d+)</title>', content)
+        call_no = sum(c[0] == "parse" for c in self.calls)
+        self.calls.append(("parse", model, [int(n) for _, n in found]))
+        if call_no in self.fail_parse_calls:
+            return SimpleNamespace(parsed_output=None, stop_reason="max_tokens")
+        base = 10 if model == "strong-model" else 9
+        assessments = [
+            score.Assessment(index=int(idx), score=max(0, base - int(n)), reason=f"{model} on {n}")
+            for idx, n in found
+            if int(n) not in self.omit
+        ]
+        return SimpleNamespace(parsed_output=score.Screening(assessments=assessments), stop_reason="end_turn")
+
+    def _create(self, model, messages, **_):
+        titles = re.findall(r"<title>Paper (\d+)</title>", messages[0]["content"])
+        self.calls.append(("create", model, [int(n) for n in titles]))
+        text = "\n\n".join(f"Summary of paper {n}." for n in titles)
+        return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text=text)])
+
+
+def make_paper(
+    i: int,
+    comment: str | None = "CVPR 2026",
+    journal_ref: str | None = None,
+    version: int = 1,
+) -> Paper:
+    arxiv_id = f"2603.{i:05d}v{version}"
     return Paper(
         arxiv_id=arxiv_id,
         title=f"Paper {i}",
@@ -75,6 +117,7 @@ def make_config(tmp: Path, profile: str = "I study seizure video.", **overrides)
         write_json_archive=False,
         profile_path=profile_path,
         venue_aliases={"NeurIPS": ["NIPS"]},
+        stats_path=tmp / "stats.json",
     )
     fields.update(overrides)
     return Config(**fields)

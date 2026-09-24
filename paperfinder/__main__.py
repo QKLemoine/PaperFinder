@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import sys
+from contextlib import contextmanager
 from datetime import date
 
 import anthropic
 
 from . import config as config_mod
 from . import digest, fetch, score
+from . import ledger as ledger_mod
 
 API_ERRORS = (anthropic.AuthenticationError, anthropic.RateLimitError, anthropic.BadRequestError)
 
@@ -54,6 +56,40 @@ def _warn_truncated(cfg: config_mod.Config) -> None:
         f"newest {cfg.max_results} were kept.\n"
         "!!! Rerun with a higher --limit to cover the whole venue.\n"
     )
+
+
+@contextmanager
+def _ledger_run(cfg: config_mod.Config):
+    """Yield the scanned-papers ledger; always refresh stats.json afterwards.
+
+    A stats write that fails after the run itself failed is only logged, so it can never
+    replace the original exception. After a successful run it raises normally.
+    """
+    ledger = ledger_mod.Ledger.open(cfg)
+    completed = False
+    try:
+        yield ledger
+        completed = True
+    finally:
+        try:
+            ledger_mod.write_stats(cfg, ledger)
+        except Exception as exc:
+            if completed:
+                raise
+            _log(f"Could not update {cfg.stats_path.name}: {exc!r}")
+
+
+def _run_stats(cfg: config_mod.Config) -> int:
+    ledger = ledger_mod.Ledger.open(cfg)
+    stats = ledger_mod.read_stats(cfg)
+    print(f"Papers scanned: {ledger.count} unique")
+    print(f"Ledger:         {cfg.ledger_path}{' (not yet saved — seeded from the conference cache)' if ledger.dirty else ''}")
+    if stats is None:
+        print(f"{cfg.stats_path.name}:     not written yet (written after the next non-dry run)")
+    else:
+        behind = "" if stats["papers_scanned"] == ledger.count else " — behind the ledger until the next run"
+        print(f"{cfg.stats_path.name}:     {stats['papers_scanned']} as of {stats['updated']}{behind}")
+    return 0
 
 
 def _print_paper(p: fetch.Paper, prefix: str) -> None:
@@ -107,28 +143,31 @@ def _run_conference(cfg: config_mod.Config, args: argparse.Namespace) -> int:
     if client is None:
         return 1
 
-    cache = score.open_cache(cfg)
-    cached = sum(cache.get(p.arxiv_id, "screening") is not None for p in filtered.kept)
-    _log(
-        f"Stage 1: screening {len(filtered.kept)} papers against {cfg.profile_path.name} "
-        f"with {cfg.screening_model} ({cached} cached)..."
-    )
-    try:
-        final = score.score_conference(client, cfg, filtered.kept, cache, _progress, _log)
-        top = [s for s in final if s.score >= cfg.score_threshold][: cfg.top_n]
-        _log(f"{len(top)} paper(s) cleared the bar (score >= {cfg.score_threshold:g}).")
-        summaries = score.conference_summaries(client, cfg, top, cache)
-    except API_ERRORS as exc:
-        return _report_api_error(exc)
+    with _ledger_run(cfg) as ledger:
+        cache = score.open_cache(cfg)
+        cached = sum(cache.get(p.arxiv_id, "screening") is not None for p in filtered.kept)
+        _log(
+            f"Stage 1: screening {len(filtered.kept)} papers against {cfg.profile_path.name} "
+            f"with {cfg.screening_model} ({cached} cached)..."
+        )
+        try:
+            final = score.score_conference(
+                client, cfg, filtered.kept, cache, _progress, _log, on_batch=ledger.record
+            )
+            top = [s for s in final if s.score >= cfg.score_threshold][: cfg.top_n]
+            _log(f"{len(top)} paper(s) cleared the bar (score >= {cfg.score_threshold:g}).")
+            summaries = score.conference_summaries(client, cfg, top, cache)
+        except API_ERRORS as exc:
+            return _report_api_error(exc)
 
-    content = digest.render_conference(
-        cfg, args.venue, args.year, top, summaries, len(papers), truncated, filtered
-    )
-    path = digest.write_conference(cfg, content, args.venue, args.year)
-    _log(f"\nWrote {path}")
-    if truncated:
-        _warn_truncated(cfg)
-    return 0
+        content = digest.render_conference(
+            cfg, args.venue, args.year, top, summaries, len(papers), truncated, filtered
+        )
+        path = digest.write_conference(cfg, content, args.venue, args.year)
+        _log(f"\nWrote {path}")
+        if truncated:
+            _warn_truncated(cfg)
+        return 0
 
 
 def main() -> int:
@@ -171,6 +210,10 @@ def main() -> int:
         action="store_true",
         help="List each excluded paper with its comment/journal ref and why it was excluded.",
     )
+    subparsers.add_parser(
+        "stats",
+        help="Print how many unique papers have been scored so far (no network calls).",
+    )
     args = parser.parse_args()
 
     cfg = config_mod.load()
@@ -181,6 +224,8 @@ def main() -> int:
 
     if args.command == "conference":
         return _run_conference(cfg, args)
+    if args.command == "stats":
+        return _run_stats(cfg)
 
     print(
         f"Fetching up to {cfg.max_results} papers from {', '.join(cfg.categories)} "
@@ -206,49 +251,52 @@ def main() -> int:
     if client is None:
         return 1
 
-    print(
-        f"Stage 1: screening {len(papers)} papers against {cfg.profile_path.name} "
-        f"with {cfg.screening_model}...",
-        file=sys.stderr,
-    )
-    try:
-        scored = score.score_papers(
-            client, cfg, papers, cfg.screening_model, cfg.screening_effort, _progress
+    with _ledger_run(cfg) as ledger:
+        print(
+            f"Stage 1: screening {len(papers)} papers against {cfg.profile_path.name} "
+            f"with {cfg.screening_model}...",
+            file=sys.stderr,
+        )
+        try:
+            scored = score.score_papers(
+                client, cfg, papers, cfg.screening_model, cfg.screening_effort, _progress,
+                on_batch=ledger.record,
+            )
+
+            # Stage 2 re-ranks only the shortlist. Screening scores and rescored scores
+            # come from different models and are not comparable, so once stage 2 runs the
+            # final selection is drawn from the rescored set alone.
+            if cfg.rescore_top > 0 and scored:
+                shortlist = [s.paper for s in scored[: cfg.rescore_top]]
+                print(
+                    f"Stage 2: re-scoring top {len(shortlist)} with {cfg.strong_model}"
+                    f"{f' (effort={cfg.strong_effort})' if cfg.strong_effort else ''}...",
+                    file=sys.stderr,
+                )
+                scored = score.score_papers(
+                    client, cfg, shortlist, cfg.strong_model, cfg.strong_effort,
+                    on_batch=ledger.record,
+                )
+        except API_ERRORS as exc:
+            return _report_api_error(exc)
+
+        top = [s for s in scored if s.score >= cfg.score_threshold][: cfg.top_n]
+        print(
+            f"{len(top)} paper(s) cleared the bar (score >= {cfg.score_threshold:g}).",
+            file=sys.stderr,
         )
 
-        # Stage 2 re-ranks only the shortlist. Screening scores and rescored scores
-        # come from different models and are not comparable, so once stage 2 runs the
-        # final selection is drawn from the rescored set alone.
-        if cfg.rescore_top > 0 and scored:
-            shortlist = [s.paper for s in scored[: cfg.rescore_top]]
-            print(
-                f"Stage 2: re-scoring top {len(shortlist)} with {cfg.strong_model}"
-                f"{f' (effort={cfg.strong_effort})' if cfg.strong_effort else ''}...",
-                file=sys.stderr,
-            )
-            scored = score.score_papers(
-                client, cfg, shortlist, cfg.strong_model, cfg.strong_effort
-            )
-    except API_ERRORS as exc:
-        return _report_api_error(exc)
+        summaries = score.write_summaries(client, cfg, top)
+        run_date = date.today()
+        content = digest.render(cfg, top, summaries, len(papers), run_date)
+        path = digest.write(cfg, content, run_date)
+        print(f"\nWrote {path}", file=sys.stderr)
 
-    top = [s for s in scored if s.score >= cfg.score_threshold][: cfg.top_n]
-    print(
-        f"{len(top)} paper(s) cleared the bar (score >= {cfg.score_threshold:g}).",
-        file=sys.stderr,
-    )
+        if cfg.write_json_archive:
+            archive = digest.write_archive(cfg, scored, run_date)
+            print(f"Wrote {archive}", file=sys.stderr)
 
-    summaries = score.write_summaries(client, cfg, top)
-    run_date = date.today()
-    content = digest.render(cfg, top, summaries, len(papers), run_date)
-    path = digest.write(cfg, content, run_date)
-    print(f"\nWrote {path}", file=sys.stderr)
-
-    if cfg.write_json_archive:
-        archive = digest.write_archive(cfg, scored, run_date)
-        print(f"Wrote {archive}", file=sys.stderr)
-
-    return 0
+        return 0
 
 
 if __name__ == "__main__":

@@ -1,5 +1,4 @@
 import json
-import re
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -7,32 +6,7 @@ from unittest import mock
 from paperfinder import score
 from paperfinder.cache import ScoreCache
 
-from .helpers import TempDirMixin, make_config, make_paper
-
-
-class FakeAnthropic:
-    """Scores paper i as 9 - i on the screening model and 10 - i on the strong model."""
-
-    def __init__(self):
-        self.calls = []
-        self.messages = SimpleNamespace(parse=self._parse, create=self._create)
-
-    def _parse(self, model, messages, output_format, **_):
-        content = messages[0]["content"]
-        found = re.findall(r'<paper index="(\d+)">\n<title>Paper (\d+)</title>', content)
-        self.calls.append(("parse", model, [int(n) for _, n in found]))
-        base = 10 if model == "strong-model" else 9
-        assessments = [
-            score.Assessment(index=int(idx), score=max(0, base - int(n)), reason=f"{model} on {n}")
-            for idx, n in found
-        ]
-        return SimpleNamespace(parsed_output=score.Screening(assessments=assessments), stop_reason="end_turn")
-
-    def _create(self, model, messages, **_):
-        titles = re.findall(r"<title>Paper (\d+)</title>", messages[0]["content"])
-        self.calls.append(("create", model, [int(n) for n in titles]))
-        text = "\n\n".join(f"Summary of paper {n}." for n in titles)
-        return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text=text)])
+from .helpers import FakeAnthropic, TempDirMixin, make_config, make_paper
 
 
 def run_conference(client, cfg, papers):
