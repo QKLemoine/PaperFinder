@@ -4,3 +4,4 @@ __pycache__/
 digests/
 .env
 research_profile.md
+*.bak
