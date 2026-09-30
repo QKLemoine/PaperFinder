@@ -1,6 +1,6 @@
 # PaperFinder
 
-![Papers scanned](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FGITHUB_USER%2FGITHUB_REPO%2Fmain%2Fstats.json&query=%24.papers_scanned&label=papers%20scanned)
+![Papers scanned](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FQKLemoine%2FPaperFinder%2Fmain%2Fstats.json&query=%24.papers_scanned&label=papers%20scanned)
 
 A daily arXiv digest that ranks new papers by whether their *substance* matches your
 research ideas, not whether their titles share your keywords.
